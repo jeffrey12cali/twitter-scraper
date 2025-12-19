@@ -272,11 +272,24 @@ func (s *Scraper) GetTweet(id string) (*Tweet, error) {
 		err = s.RequestAPI(req, &conversation)
 
 		if curBearerToken != bearerToken2 {
+			// Restore first so the retry below uses the original token.
 			s.setBearerToken(curBearerToken)
+		}
+
+		// If bearerToken2 becomes invalid/outdated, the logged-in GraphQL endpoint may
+		// start returning 401/403 even though the session cookies are fine.
+		// Retry once with the original bearer token.
+		if err != nil && curBearerToken != bearerToken2 {
+			if httpErr, ok := err.(*HTTPError); ok && (httpErr.StatusCode == 401 || httpErr.StatusCode == 403) {
+				err = s.RequestAPI(req, &conversation)
+			}
 		}
 
 		if err != nil {
 			return nil, err
+		}
+		if len(conversation.Errors) > 0 {
+			return nil, fmt.Errorf("tweet detail graphql error (%d): %s", conversation.Errors[0].Code, conversation.Errors[0].Message)
 		}
 
 		tweets, _ := conversation.parse(id)
@@ -341,11 +354,22 @@ func (s *Scraper) GetTweet(id string) (*Tweet, error) {
 		err = s.RequestAPI(req, &result)
 
 		if curBearerToken != bearerToken2 {
+			// Restore first so the retry below uses the original token.
 			s.setBearerToken(curBearerToken)
+		}
+
+		// Retry once with the original bearer token on auth failures.
+		if err != nil && curBearerToken != bearerToken2 {
+			if httpErr, ok := err.(*HTTPError); ok && (httpErr.StatusCode == 401 || httpErr.StatusCode == 403) {
+				err = s.RequestAPI(req, &result)
+			}
 		}
 
 		if err != nil {
 			return nil, err
+		}
+		if len(result.Errors) > 0 {
+			return nil, fmt.Errorf("tweet result graphql error (%d): %s", result.Errors[0].Code, result.Errors[0].Message)
 		}
 
 		tweet := result.parse()

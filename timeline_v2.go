@@ -338,6 +338,10 @@ func (timeline *timelineV2) parseUsers() ([]*Profile, string) {
 }
 
 type threadedConversation struct {
+	Errors []struct {
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+	} `json:"errors"`
 	Data struct {
 		ThreadedConversationWithInjectionsV2 struct {
 			Instructions []struct {
@@ -353,54 +357,63 @@ type threadedConversation struct {
 func (conversation *threadedConversation) parse(focalTweetID string) ([]*Tweet, []*ThreadCursor) {
 	var tweets []*Tweet
 	var cursors []*ThreadCursor
-	for _, instruction := range conversation.Data.ThreadedConversationWithInjectionsV2.Instructions {
-		for _, entry := range instruction.Entries {
-			if entry.Content.ItemContent.TweetResults.Result.Typename == "Tweet" || entry.Content.ItemContent.TweetResults.Result.Typename == "TweetWithVisibilityResults" {
-				if tweet := entry.Content.ItemContent.TweetResults.Result.parse(); tweet != nil {
-					if entry.Content.ItemContent.TweetDisplayType == "SelfThread" {
+
+	processEntry := func(entry entry) {
+		if entry.Content.ItemContent.TweetResults.Result.Typename == "Tweet" || entry.Content.ItemContent.TweetResults.Result.Typename == "TweetWithVisibilityResults" {
+			if tweet := entry.Content.ItemContent.TweetResults.Result.parse(); tweet != nil {
+				if entry.Content.ItemContent.TweetDisplayType == "SelfThread" {
+					tweet.IsSelfThread = true
+				}
+				tweets = append(tweets, tweet)
+			}
+		}
+
+		if entry.Content.ItemContent.CursorType != "" && entry.Content.ItemContent.Value != "" {
+			cursors = append(cursors, &ThreadCursor{
+				FocalTweetID: focalTweetID,
+				ThreadID:     focalTweetID,
+				Cursor:       entry.Content.ItemContent.Value,
+				CursorType:   entry.Content.ItemContent.CursorType,
+			})
+		}
+
+		for _, item := range entry.Content.Items {
+			if item.Item.ItemContent.TweetResults.Result.Typename == "Tweet" || item.Item.ItemContent.TweetResults.Result.Typename == "TweetWithVisibilityResults" {
+				if tweet := item.Item.ItemContent.TweetResults.Result.parse(); tweet != nil {
+					if item.Item.ItemContent.TweetDisplayType == "SelfThread" {
 						tweet.IsSelfThread = true
 					}
 					tweets = append(tweets, tweet)
 				}
 			}
 
-			if entry.Content.ItemContent.CursorType != "" && entry.Content.ItemContent.Value != "" {
+			if item.Item.ItemContent.CursorType != "" && item.Item.ItemContent.Value != "" {
+				threadID := ""
+
+				entryId := strings.Split(item.EntryID, "-")
+				if len(entryId) > 1 && entryId[0] == "conversationthread" {
+					if i, _ := strconv.Atoi(entryId[1]); i != 0 {
+						threadID = entryId[1]
+					}
+				}
+
 				cursors = append(cursors, &ThreadCursor{
 					FocalTweetID: focalTweetID,
-					ThreadID:     focalTweetID,
-					Cursor:       entry.Content.ItemContent.Value,
-					CursorType:   entry.Content.ItemContent.CursorType,
+					ThreadID:     threadID,
+					Cursor:       item.Item.ItemContent.Value,
+					CursorType:   item.Item.ItemContent.CursorType,
 				})
 			}
+		}
+	}
 
-			for _, item := range entry.Content.Items {
-				if item.Item.ItemContent.TweetResults.Result.Typename == "Tweet" || item.Item.ItemContent.TweetResults.Result.Typename == "TweetWithVisibilityResults" {
-					if tweet := item.Item.ItemContent.TweetResults.Result.parse(); tweet != nil {
-						if item.Item.ItemContent.TweetDisplayType == "SelfThread" {
-							tweet.IsSelfThread = true
-						}
-						tweets = append(tweets, tweet)
-					}
-				}
-
-				if item.Item.ItemContent.CursorType != "" && item.Item.ItemContent.Value != "" {
-					threadID := ""
-
-					entryId := strings.Split(item.EntryID, "-")
-					if len(entryId) > 1 && entryId[0] == "conversationthread" {
-						if i, _ := strconv.Atoi(entryId[1]); i != 0 {
-							threadID = entryId[1]
-						}
-					}
-
-					cursors = append(cursors, &ThreadCursor{
-						FocalTweetID: focalTweetID,
-						ThreadID:     threadID,
-						Cursor:       item.Item.ItemContent.Value,
-						CursorType:   item.Item.ItemContent.CursorType,
-					})
-				}
-			}
+	for _, instruction := range conversation.Data.ThreadedConversationWithInjectionsV2.Instructions {
+		// Some TweetDetail responses use `entry` instead of `entries`.
+		if instruction.Entry.Content.ItemContent.ItemType != "" || instruction.Entry.Content.CursorType != "" {
+			processEntry(instruction.Entry)
+		}
+		for _, entry := range instruction.Entries {
+			processEntry(entry)
 		}
 		for _, item := range instruction.ModuleItems {
 			if item.Item.ItemContent.TweetResults.Result.Typename == "Tweet" || item.Item.ItemContent.TweetResults.Result.Typename == "TweetWithVisibilityResults" {
@@ -456,6 +469,10 @@ func (conversation *threadedConversation) parse(focalTweetID string) ([]*Tweet, 
 }
 
 type tweetResult struct {
+	Errors []struct {
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+	} `json:"errors"`
 	Data struct {
 		TweetResult struct {
 			Result result `json:"result"`

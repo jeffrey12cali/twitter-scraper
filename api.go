@@ -10,6 +10,20 @@ import (
 
 const bearerToken string = "AAAAAAAAAAAAAAAAAAAAAPYXBAAAAAAACLXUNDekMxqa8h%2F40K4moUkGsoc%3DTYfbDKbT3jJPCEVnMYqilB28NHfOPqkca3qaAxGfsyKCs0wRbw"
 
+// HTTPError is returned when the Twitter API responds with a non-200 status code.
+// It preserves the HTTP status and response body for callers that want to implement
+// conditional retries (e.g., fallback bearer tokens on 401/403).
+type HTTPError struct {
+	StatusCode int
+	Status     string
+	Body       []byte
+}
+
+func (e *HTTPError) Error() string {
+	// Keep the historical error string format for compatibility.
+	return fmt.Sprintf("response status %s: %s", e.Status, e.Body)
+}
+
 // RequestAPI get JSON from frontend API and decodes it
 func (s *Scraper) RequestAPI(req *http.Request, target interface{}) error {
 	s.wg.Wait()
@@ -87,7 +101,11 @@ func (s *Scraper) handleResponse(resp *http.Response, target interface{}) error 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("response status %s: %s", resp.Status, content)
+		return &HTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       content,
+		}
 	}
 
 	if resp.Header.Get("X-Rate-Limit-Remaining") == "0" {
