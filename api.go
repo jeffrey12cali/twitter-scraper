@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -35,13 +36,63 @@ func (s *Scraper) RequestAPI(req *http.Request, target interface{}) error {
 		return err
 	}
 
-	resp, err := s.client.Do(req)
-	if err != nil {
+	doOnce := func() error {
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		return s.handleResponse(resp, target)
+	}
+
+	err := doOnce()
+	if err == nil {
+		return nil
+	}
+
+	// Bearer token fallback: some endpoints will return 401/403 if a previously valid
+	// bearer token becomes invalid/outdated, even if session cookies are fine.
+	// We only do this for logged-in, non-OAuth requests (OAuth requests must not be modified).
+	httpErr, ok := err.(*HTTPError)
+	if !ok || (httpErr.StatusCode != http.StatusUnauthorized && httpErr.StatusCode != http.StatusForbidden) {
 		return err
 	}
-	defer resp.Body.Close()
+	if !s.isLogged || (s.oAuthToken != "" && s.oAuthSecret != "") {
+		return err
+	}
 
-	return s.handleResponse(resp, target)
+	auth := req.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return err
+	}
+	usedToken := strings.TrimPrefix(auth, "Bearer ")
+
+	tryTokens := []string{usedToken, bearerToken1, bearerToken2, bearerToken}
+	seen := make(map[string]bool)
+	for _, tok := range tryTokens {
+		if tok == "" || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		if tok == usedToken {
+			continue // already tried
+		}
+
+		req.Header.Set("Authorization", "Bearer "+tok)
+		retryErr := doOnce()
+		if retryErr == nil {
+			return nil
+		}
+
+		// If the retry failed for a different reason than 401/403, surface it immediately.
+		if retryHTTP, ok := retryErr.(*HTTPError); !ok || (retryHTTP.StatusCode != http.StatusUnauthorized && retryHTTP.StatusCode != http.StatusForbidden) {
+			return retryErr
+		}
+	}
+
+	// restore original auth header and return initial error
+	req.Header.Set("Authorization", auth)
+	return err
 }
 
 func (s *Scraper) delayRequest() {
